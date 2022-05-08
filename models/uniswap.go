@@ -13,9 +13,10 @@ type TokenDay struct {
 }
 
 type VolumePerTimeWindow struct {
-	StartTime      int64   `json:"start_time,omitempty"`
-	EndTime        int64   `json:"end_time,omitempty"`
-	TotalVolumeUSD float64 `json:"token_id"`
+	TokenId        string  `json:token_id`
+	StartTime      int64   `json:"start_time,string"`
+	EndTime        int64   `json:"end_time,string"`
+	TotalVolumeUSD float64 `json:"total_volume_USD"`
 }
 
 type Pool struct {

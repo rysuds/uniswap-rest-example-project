@@ -16,13 +16,25 @@ type UniswapClient struct {
 	*graphql.Client
 }
 
+/*
+Get a single Asset based on block number
+
+Graphql:
+{
+  token(id: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"){
+    symbol
+    volumeUSD
+  }
+}
+
+*/
 func (u *UniswapClient) GetAsset(c *gin.Context) {
 	assetId := c.Param("id")
 	var query struct {
 		Token struct {
-			Id     graphql.String
-			Symbol graphql.String
-			Volume graphql.String
+			Id        graphql.String
+			Symbol    graphql.String
+			VolumeUSD graphql.String `graphql:"volumeUSD"`
 		} `graphql:"token(id: $id)"`
 	}
 	variables := map[string]interface{}{
@@ -34,7 +46,7 @@ func (u *UniswapClient) GetAsset(c *gin.Context) {
 		c.AbortWithError(http.StatusInternalServerError, err)
 		return
 	}
-	parsedVolume, err := strconv.ParseFloat(string(query.Token.Volume), 64)
+	parsedVolume, err := strconv.ParseFloat(string(query.Token.VolumeUSD), 64)
 	if err != nil {
 		c.Error(err)
 	}
@@ -43,9 +55,28 @@ func (u *UniswapClient) GetAsset(c *gin.Context) {
 		Symbol:    string(query.Token.Symbol),
 		VolumeUSD: parsedVolume,
 	}
-	c.JSON(http.StatusOK, gin.H{"data": asset})
+	c.JSON(http.StatusOK, gin.H{"asset": asset})
 }
 
+/*
+Get at Pools an Asset sits in
+
+Graphql:
+{
+  token(id:"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"){
+ 	id
+    whitelistPools {
+      id
+      token0 {
+        id
+      }
+      token1 {
+        id
+      }
+    }
+ }
+}
+*/
 func (u UniswapClient) GetAssetPools(c *gin.Context) {
 	// Given an AssetID, return all Pools
 	assetId := c.Param("id")
@@ -84,63 +115,101 @@ func (u UniswapClient) GetAssetPools(c *gin.Context) {
 			Asset1Symbol: string(pool.Token1.Symbol),
 		})
 	}
-	c.JSON(http.StatusOK, gin.H{"data": pools})
+	c.JSON(http.StatusOK, gin.H{"pools": pools})
 }
 
+/*
+Get total volume of Asset given a time period. If no period specified, default to a week from current time
+
+Graphql:
+{
+  tokenDayDatas(where: {date_gte: 1620172800, date_lte: 1630172800, token: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"}) {
+		volumeUSD
+    date
+  }
+}
+*/
 func (u UniswapClient) GetAssetVolume(c *gin.Context) {
-	// Given an AssetID, and start/end, return colume during time period
-	// if no query params given, default to total volume for asset
-	// Given an AssetID, return all Pools
 	assetId := c.Param("id")
+
 	var query struct {
 		TokenDayDatas []struct {
-			Volume graphql.String
-			Date   graphql.String
+			VolumeUSD graphql.String `graphql:"volumeUSD"`
+			Date      graphql.String
 		} `graphql:"tokenDayDatas(where: {date_gte: $date_gte, date_lte: $date_lte, token: $id})"`
 	}
 	endTimeParam := c.DefaultQuery("endTime", fmt.Sprintf("%d", time.Now().Unix()))
 	endTime, err := strconv.ParseInt(endTimeParam, 10, 64)
+	fmt.Println(endTime)
 	if err != nil {
 		c.Error(err)
 	}
 
 	startTimeParam := c.DefaultQuery("startTime", fmt.Sprintf("%d", time.Now().Unix()-models.WEEK_IN_SECONDS))
 	startTime, err := strconv.ParseInt(startTimeParam, 10, 64)
+	fmt.Println(startTime)
 	if err != nil {
 		c.Error(err)
 	}
+
 	variables := map[string]interface{}{
 		"id":       graphql.String(assetId),
-		"date_lte": graphql.Int(startTime),
-		"date_gte": graphql.Int(endTime),
+		"date_gte": graphql.Int(startTime),
+		"date_lte": graphql.Int(endTime),
 	}
 
 	qerr := u.Client.Query(context.Background(), &query, variables)
 	if qerr != nil {
-		c.AbortWithError(http.StatusInternalServerError, err)
-		return
+		fmt.Println(qerr)
 	}
 
-	var sumVolume float64
+	// TODO: There is a bug here, it is only grabbing one day when it should be grabbing multiple
+	var sumVolume float64 = 0
 	for _, dayData := range query.TokenDayDatas {
-		parsedVolume, err := strconv.ParseFloat(string(dayData.Volume), 64)
+		parsedVolume, err := strconv.ParseFloat(string(dayData.VolumeUSD), 64)
 		if err != nil {
-			c.AbortWithError(http.StatusInternalServerError, err)
-			return
+			fmt.Println(qerr)
 		}
+		fmt.Println(parsedVolume)
 		sumVolume += parsedVolume
 	}
 
 	result := models.VolumePerTimeWindow{
+		TokenId:        assetId,
 		StartTime:      startTime,
 		EndTime:        endTime,
 		TotalVolumeUSD: sumVolume,
 	}
-	c.JSON(http.StatusOK, gin.H{"data": result})
+	c.JSON(http.StatusOK, gin.H{"volume": result})
 }
 
+/*
+For a given block, return aggregated result of Swaps and all Assets in every swap.
+Aggregation is done so via grabbing all Transactions per block and iterating through
+
+Graphql:
+{
+  transactions(where: {blockNumber: 14732439}){
+    id
+    blockNumber
+    swaps {
+			id
+      token0 {
+				id
+        symbol
+      }
+      amount0
+      token1 {
+				id
+        symbol
+      }
+      amount1
+    }
+  }
+}
+
+*/
 func (u UniswapClient) GetSwapResult(c *gin.Context) models.SwapResult {
-	// Given a BlockNumber, get all Swaps that happened during that time
 	blockNumber := c.Param("blocknumber")
 	var query struct {
 		Transactions []struct {
@@ -170,6 +239,8 @@ func (u UniswapClient) GetSwapResult(c *gin.Context) models.SwapResult {
 		c.AbortWithError(http.StatusInternalServerError, err)
 		return models.SwapResult{}
 	}
+
+	// Iterate through transactions and record Awaps and Assets
 	var swaps []models.Swap
 	var assets []models.Asset
 	assetSet := make(map[string]struct{})
@@ -226,16 +297,16 @@ func (u UniswapClient) GetSwapResult(c *gin.Context) models.SwapResult {
 	return swapResult
 }
 
+// Return array of Swaps given a block number
 func (u UniswapClient) GetSwapsPerBlock(c *gin.Context) {
-	// Return list of assets swapped given a block number
 	swapResult := u.GetSwapResult(c)
 	swaps := swapResult.Swaps
-	c.JSON(http.StatusOK, gin.H{"data": swaps, "count": len(swaps)})
+	c.JSON(http.StatusOK, gin.H{"swaps": swaps, "count": len(swaps)})
 }
 
+// Return array of assets swapped given a block number
 func (u UniswapClient) GetAssetsSwappedPerBlock(c *gin.Context) {
-	// Return list of assets swapped given a block number
 	swapResult := u.GetSwapResult(c)
 	assets := swapResult.Assets
-	c.JSON(http.StatusOK, gin.H{"data": assets, "count": len(assets)})
+	c.JSON(http.StatusOK, gin.H{"assets": assets, "count": len(assets)})
 }
