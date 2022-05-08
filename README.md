@@ -27,6 +27,8 @@ Because I wanted to get this out quickly and get a workig solution, there is alo
 go run main.go
 ```
 
+By default the server will run on PORT 8080
+
 ## Endpoints
 
 ---
